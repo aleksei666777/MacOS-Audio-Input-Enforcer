@@ -64,6 +64,10 @@ OSStatus callbackFunction(  AudioObjectID inObjectID,
     statusItem.button.toolTip = @"AirPods Audio Quality & Battery Life Fixer"; // NEW: Use button.toolTip
     statusItem.button.image = image; // NEW: Use button.image
 
+    // Restore status icon visibility
+    BOOL shouldHideIcon = [defaults boolForKey:@"StatusIconHidden"];
+    [statusItem setVisible:!shouldHideIcon];
+
     // add listener for detecting when input device is changed
 
     AudioObjectPropertyAddress inputDeviceAddress = {
@@ -95,6 +99,8 @@ OSStatus callbackFunction(  AudioObjectID inObjectID,
         NULL,
         size,
         &runLoop);
+    
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(appBecameActive:) name:NSApplicationDidBecomeActiveNotification object:nil];
     
      [ self listDevices ];
     
@@ -287,15 +293,25 @@ OSStatus callbackFunction(  AudioObjectID inObjectID,
             
             NSString* nameStr = [ NSString stringWithUTF8String : deviceName ];
 
-            if ( [ [ nameStr lowercaseString ] containsString : @"built" ] && forcedInputID == UINT32_MAX )
-            {
-
-                // if there is no forced device yet, select "built-in" by default
-
-                NSLog( @"setting forced device : %s  %u\n" , deviceName , (unsigned int)oneDeviceID );
-
-                forcedInputID = oneDeviceID;
-                
+            // Determine built-in by transport type instead of localized name
+            UInt32 transportType = 0;
+            UInt32 transportSize = sizeof(transportType);
+            AudioObjectPropertyAddress transportAddress = {
+                kAudioDevicePropertyTransportType,
+                kAudioObjectPropertyScopeGlobal,
+                kAudioObjectPropertyElementMain
+            };
+            if (AudioObjectGetPropertyData(oneDeviceID,
+                                           &transportAddress,
+                                           0,
+                                           NULL,
+                                           &transportSize,
+                                           &transportType) == noErr) {
+                if (transportType == kAudioDeviceTransportTypeBuiltIn && forcedInputID == UINT32_MAX) {
+                    // if there is no forced device yet, select built-in by default
+                    NSLog(@"setting forced device (built-in by transport): %s  %u\n", deviceName, (unsigned int)oneDeviceID);
+                    forcedInputID = oneDeviceID;
+                }
             }
 
             NSMenuItem* item = [ menu
@@ -341,8 +357,24 @@ OSStatus callbackFunction(  AudioObjectID inObjectID,
         &deviceID
     );
 
-    NSLog( @"default input device is %u" , deviceID );
-    
+    NSLog(@"default input device is %u", deviceID);
+
+    // Read transport type of current default input to know if it's built-in
+    UInt32 currentTransport = 0;
+    UInt32 currentTransportSize = sizeof(currentTransport);
+    AudioObjectPropertyAddress currentTransportAddress = {
+        kAudioDevicePropertyTransportType,
+        kAudioObjectPropertyScopeGlobal,
+        kAudioObjectPropertyElementMain
+    };
+    AudioObjectGetPropertyData(deviceID,
+                               &currentTransportAddress,
+                               0,
+                               NULL,
+                               &currentTransportSize,
+                               &currentTransport);
+    BOOL defaultIsBuiltIn = (currentTransport == kAudioDeviceTransportTypeBuiltIn);
+
     if ( !paused && forcedInputID != UINT32_MAX && deviceID != forcedInputID )
     {
 
@@ -420,6 +452,8 @@ OSStatus callbackFunction(  AudioObjectID inObjectID,
 - ( void ) hide
 {
     [statusItem setVisible:false];
+    [defaults setBool:YES forKey:@"StatusIconHidden"];
+    [defaults synchronize];
 }
 
 - (void)toggleStartupItem
@@ -450,4 +484,21 @@ OSStatus callbackFunction(  AudioObjectID inObjectID,
     [self updateStartupItemState];
 }
 
+- (BOOL)applicationShouldHandleReopen:(NSApplication *)theApplication hasVisibleWindows:(BOOL)flag
+{
+    // If the app is invoked again while running, show the status icon
+    [statusItem setVisible:true];
+    [defaults setBool:NO forKey:@"StatusIconHidden"];
+    [defaults synchronize];
+    return YES;
+}
+
+- (void)appBecameActive:(NSNotification *)note
+{
+    [statusItem setVisible:true];
+    [defaults setBool:NO forKey:@"StatusIconHidden"];
+    [defaults synchronize];
+}
+
 @end
+
